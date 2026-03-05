@@ -1,0 +1,28 @@
+[package]
+name = "spectrs"
+version = "0.1.0"
+description = "TUI for rtl-sdr"
+authors = ["Nico Piel <nicopiel@mailbox.org>"]
+license = "MIT"
+edition = "2024"
+
+[dependencies]
+color-eyre = "0.6.5"
+crossterm = "0.29.0"
+ratatui = "0.30.0"
+clap = { version = "4.5.60", features = ["derive"] }
+cpal = "0.17.3"
+num-complex = "0.4.6"
+rustfft = "6.4.1"
+soapysdr = "0.4.5"
+tokio = { version = "1.49.0", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.22"
+
+
+# Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
