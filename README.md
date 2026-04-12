@@ -76,6 +76,10 @@ For those interested in the radio math, the audio pipeline processes data in the
 To prevent terminal UI corruption, logging (`stdout`) is routed to a black-hole sink by default. If you are developing
 and need to see `tracing` output, you can redirect the `tracing_appender` to a file in `main.rs`.
 
+## Contributing
+
+If you have a cool feature idea or have already implemented something cool, feel free to open a PR!
+
 ## License
 
 MIT
