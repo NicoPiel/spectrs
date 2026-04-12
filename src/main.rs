@@ -7,8 +7,10 @@ use crossterm::{event, ExecutableCommand};
 use num_complex::Complex32;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::widgets::{Block, Borders};
-use ratatui::Terminal;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph};
+use ratatui::{symbols, Terminal};
 use rtl_sdr_rs::{RtlSdr, TunerGain};
 use rustfft::FftPlanner;
 use std::io::stdout;
@@ -236,7 +238,15 @@ fn tui(
 
         if fft_rx.has_changed()? {
             let new_data = fft_rx.borrow_and_update().clone();
-            state.latest_fft = new_data;
+            state.latest_fft = new_data.clone();
+
+            state.waterfall_history.push_front(new_data);
+
+            let max_height = terminal.size()?.height as usize;
+
+            if state.waterfall_history.len() > max_height {
+                state.waterfall_history.pop_back();
+            }
         }
 
         terminal.draw(|frame| {
@@ -247,13 +257,77 @@ fn tui(
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(area);
 
+            let data: Vec<(f64, f64)> = state
+                .latest_fft
+                .clone()
+                .iter()
+                .enumerate()
+                .map(|(i, &mag)| (i as f64, mag as f64))
+                .collect();
+
+            let datasets = vec![
+                Dataset::default()
+                    .marker(symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Cyan))
+                    .data(&data),
+            ];
+
             let spectrogram_block = Block::default()
                 .title(format!(" Spectrogram | {} Hz ", state.current_frequency))
                 .borders(Borders::ALL);
-            frame.render_widget(spectrogram_block, chunks[0]);
 
-            let waterfall_block = Block::default().title(" Waterfall ").borders(Borders::ALL);
-            frame.render_widget(waterfall_block, chunks[1]);
+            let chart = Chart::new(datasets)
+                .block(spectrogram_block)
+                .x_axis(
+                    Axis::default()
+                        .title(Span::styled(
+                            "Frequency Bin",
+                            Style::default().fg(Color::Gray),
+                        ))
+                        .bounds([0.0, FFT_SIZE as f64]),
+                )
+                .y_axis(
+                    Axis::default()
+                        .title(Span::styled(
+                            "Magnitude (dB)",
+                            Style::default().fg(Color::Gray),
+                        ))
+                        .bounds([-100.0, 0.0]),
+                );
+
+            frame.render_widget(chart, chunks[0]);
+
+            // Calculate available width inside the right pane borders
+            let waterfall_width = chunks[1].width.saturating_sub(2) as usize;
+
+            let mut lines = Vec::new();
+
+            if waterfall_width > 0 {
+                // Determine how many FFT bins fit into a single terminal character column
+                let bins_per_char = (FFT_SIZE / waterfall_width).max(1);
+
+                for row_data in state.waterfall_history.iter() {
+                    let mut spans = Vec::new();
+
+                    // Downsample the 1024 bins into `waterfall_width` chunks
+                    for chunk in row_data.chunks(bins_per_char) {
+                        // Find the maximum dB value in this chunk (peak detection)
+                        let max_db = chunk.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+
+                        spans.push(Span::styled(
+                            "█", // Full block character
+                            Style::default().fg(db_to_color(max_db)),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+
+            let waterfall_paragraph = Paragraph::new(lines)
+                .block(Block::default().title(" Waterfall ").borders(Borders::ALL));
+
+            frame.render_widget(waterfall_paragraph, chunks[1]);
         })?;
 
         if event::poll(Duration::from_millis(16))?
@@ -439,6 +513,8 @@ async fn fft(
 
             // Calculate magnitudes and apply FFT Shift simultaneously
             let half_size = FFT_SIZE / 2;
+            let n_sq = FFT_SIZE as f32 * FFT_SIZE as f32;
+
             for i in 0..FFT_SIZE {
                 // Shift: indices 0..511 go to 512..1023, and 512..1023 go to 0..511
                 let shifted_i = if i < half_size {
@@ -448,13 +524,26 @@ async fn fft(
                 };
 
                 // Add a tiny epsilon (1e-10) to avoid log10(0) if a bin is perfectly empty
-                let power = frame[i].norm_sqr() + 1e-10;
+                // Normalize for output
+                let power = (frame[i].norm_sqr() / n_sq) + 1e-10;
                 magnitudes[shifted_i] = 10.0 * power.log10();
             }
 
-            let _ = fft_watch_tx.send(magnitudes.clone())?;
+            let _ = fft_watch_tx.send(magnitudes.clone());
         }
     }
 
     Ok(())
+}
+
+fn db_to_color(db: f32) -> Color {
+    // Clamp between -100 dB and 0 dB, then normalize to 0.0 -> 1.0
+    let normalized = (db.clamp(-100.0, 0.0) + 100.0) / 100.0;
+
+    // Create a simple cold-to-hot gradient (Blue -> Green -> Red)
+    let r = (normalized * 255.0) as u8;
+    let g = ((0.5 - (normalized - 0.5).abs()) * 2.0 * 255.0) as u8;
+    let b = ((1.0 - normalized) * 255.0) as u8;
+
+    Color::Rgb(r, g, b)
 }
