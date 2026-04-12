@@ -396,20 +396,27 @@ async fn audio(
     // Now play audio
     stream.play().expect("Failed to play audio stream.");
 
-    // Low pass filters
-    let mut lpf1 = LowPassFilter::new(64, 0.05);
-    let mut lpf2 = LowPassFilter::new(32, 0.083);
+    // --- NEW DSP SETUP ---
+    // Stage 1: RF Filter (2.4 MHz -> 240 kHz)
+    // Nyquist is 1.2 MHz. WBFM channel is ~100kHz wide. 100k / 1.2M = 0.083
+    let mut lpf_i = LowPassFilter::new(64, 0.083);
+    let mut lpf_q = LowPassFilter::new(64, 0.083);
 
-    // Previous sample for demodulation
+    // Stage 2: Audio Filter (240 kHz -> 48 kHz)
+    // Nyquist is 120 kHz. Human hearing is ~15kHz. 15k / 120k = 0.125
+    let mut lpf_audio = LowPassFilter::new(32, 0.125);
+
     let mut prev = Complex32::new(0.0, 0.0);
+
+    // European FM De-emphasis (50 micro-seconds) at 240 kHz sample rate
+    let mut deemph_hist = 0.0;
+    let deemph_alpha = 0.08;
 
     while let Ok(raw) = audio_rx.recv().await {
         if shutdown.load(Ordering::Relaxed) {
             break;
         }
 
-        // Convert IQ pairs to one complex number I + Qi
-        // Also normalize and center
         let iq: Vec<Complex32> = raw
             .chunks_exact(2)
             .map(|pair| {
@@ -420,43 +427,47 @@ async fn audio(
             })
             .collect();
 
-        // -------------
-        // --- AUDIO ---
-        // -------------
+        // 1. Separate I and Q vectors for filtering
+        let i_samples: Vec<f32> = iq.iter().map(|c| c.re).collect();
+        let q_samples: Vec<f32> = iq.iter().map(|c| c.im).collect();
 
-        // Demodulate IQ for audio output
-        // Sampling at default rate gives us 2.4 MHz
-        let demodulated: Vec<f32> = iq
+        // 2. Filter and Decimate the RF Signal (Isolate the station)
+        let i_dec = lpf_i.process_and_decimate(&i_samples, 10);
+        let q_dec = lpf_q.process_and_decimate(&q_samples, 10);
+
+        // 3. Demodulate the clean 240 kHz signal
+        let demodulated: Vec<f32> = i_dec
             .iter()
-            .map(|&sample| {
+            .zip(q_dec.iter())
+            .map(|(&re, &im)| {
+                let sample = Complex32::new(re, im);
                 let product = sample * prev.conj();
                 prev = sample;
-                product.arg()
+                product.arg() // Phase difference
             })
             .collect();
 
-        // Low pass stage 1
-        let stage1 = lpf1.process_and_decimate(&demodulated, 10); // default 2.4MHz -> 240kHz
-        let stage2 = lpf2.process_and_decimate(&stage1, 5); // default 240kHz -> 48kHz
+        // 4. Apply FM De-emphasis to kill the hiss
+        let deemph: Vec<f32> = demodulated
+            .iter()
+            .map(|&s| {
+                deemph_hist = deemph_alpha * s + (1.0 - deemph_alpha) * deemph_hist;
+                deemph_hist
+            })
+            .collect();
 
-        let audio: Vec<f32> = stage2.iter().map(|&s| s * 0.3).collect();
+        // 5. Final Audio Low-Pass and Decimation to 48 kHz
+        let final_audio = lpf_audio.process_and_decimate(&deemph, 5);
 
-        /*info!(
-            "iq: {}, demod: {}, stage1: {}, audio: {}, buf: {}",
-            iq.len(),
-            demodulated.len(),
-            stage1.len(),
-            audio.len(),
-            audio_buf_write_clone.lock().unwrap().len()
-        );*/
+        // 6. Scale and push to buffer
+        // (Note: because we demodulate at 240k instead of 2.4M, the phase delta is
+        // 10x larger, so we multiply by 0.2 to keep it comfortable)
+        let audio: Vec<f32> = final_audio.iter().map(|&s| s * 0.2).collect();
 
-        // Write to audio ring buffer
         let mut buf = audio_buf_write.lock().unwrap();
-
         if buf.len() > 48000 {
             warn!("Audio buffer backing up: {} samples", buf.len());
         }
-
         if buf.len() < 48000 * 2 {
             buf.extend(audio.iter());
         }
