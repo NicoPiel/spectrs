@@ -1,16 +1,16 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{Event, KeyCode};
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use crossterm::{event, ExecutableCommand};
+use crossterm::{ExecutableCommand, event};
 use num_complex::Complex32;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph};
-use ratatui::{symbols, Terminal};
+use ratatui::{Terminal, symbols};
 use rtl_sdr_rs::{RtlSdr, TunerGain};
 use rustfft::FftPlanner;
 use std::io::stdout;
@@ -18,7 +18,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::{
     collections::VecDeque,
-    sync::{atomic::AtomicBool, mpsc, Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool, mpsc},
 };
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
