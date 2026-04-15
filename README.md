@@ -1,4 +1,4 @@
-# spectrs 📻
+# spectrs
 
 A real-time, terminal-based Software Defined Radio (SDR) and FM demodulator written in Rust.
 
